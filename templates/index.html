@@ -299,8 +299,13 @@
         
         // Analyze button
         analyzeBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
+            console.log('[FRONTEND] Analyze button clicked');
+            if (!selectedFile) {
+                console.log('[FRONTEND] ERROR: No file selected');
+                return;
+            }
             
+            console.log('[FRONTEND] File selected:', selectedFile.name);
             const formData = new FormData();
             formData.append('file', selectedFile);
             
@@ -311,12 +316,15 @@
             results.innerHTML = '';
             
             try {
+                console.log('[FRONTEND] Sending request to /upload...');
                 const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
                 
+                console.log('[FRONTEND] Response received:', response.status, response.statusText);
                 const data = await response.json();
+                console.log('[FRONTEND] Response data:', data);
                 
                 if (!response.ok) {
                     throw new Error(data.error || 'Failed to analyze image');
@@ -325,6 +333,7 @@
                 displayResults(data);
                 
             } catch (err) {
+                console.error('[FRONTEND] Error:', err);
                 showError(err.message);
             } finally {
                 loading.style.display = 'none';

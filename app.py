@@ -169,8 +169,20 @@ def analyze_food_with_gemini(image_path):
         with io.open(image_path, 'rb') as image_file:
             image_data = image_file.read()
         
-        # Initialize Gemini model (using gemini-1.5-pro for better vision capabilities)
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # Initialize Gemini model - use available model names
+        # Available models: gemini-2.5-flash, gemini-2.5-pro, gemini-pro-latest
+        # Use gemini-2.5-flash (fast and available)
+        try:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+        except Exception as e:
+            # Fallback to gemini-pro-latest if flash doesn't work
+            app.logger.warning(f"gemini-2.5-flash failed: {e}, trying gemini-pro-latest")
+            try:
+                model = genai.GenerativeModel('gemini-pro-latest')
+            except Exception as e2:
+                # Last resort - try gemini-2.5-pro
+                app.logger.warning(f"gemini-pro-latest failed: {e2}, trying gemini-2.5-pro")
+                model = genai.GenerativeModel('gemini-2.5-pro')
         
         # Create a detailed prompt for food analysis
         prompt = """You are a food identification expert. Analyze this food image CAREFULLY and accurately.
@@ -302,7 +314,14 @@ Be accurate and specific. Only mention items you can actually see in the image."
 @app.route('/')
 def index():
     """Render the main page"""
+    print(f"[ROUTE] Index page requested")
     return render_template('index.html')
+
+@app.route('/test')
+def test_route():
+    """Test route to verify Flask is working"""
+    print(f"[ROUTE] Test route called")
+    return jsonify({'status': 'ok', 'message': 'Flask is working'})
 
 @app.route('/api/status')
 def api_status():
@@ -317,9 +336,16 @@ def api_status():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     """Handle file upload and process with Gemini API (with Vision API fallback)"""
-    print(f"\n[UPLOAD] ===== Upload request received =====")
-    print(f"[UPLOAD] Request method: {request.method}")
-    print(f"[UPLOAD] Files in request: {list(request.files.keys())}")
+    # Use Flask logger which definitely shows up
+    app.logger.info("===== Upload request received =====")
+    app.logger.info(f"Request method: {request.method}")
+    app.logger.info(f"Files in request: {list(request.files.keys())}")
+    
+    # Also print to stdout
+    import sys
+    print(f"\n[UPLOAD] ===== Upload request received =====", file=sys.stderr, flush=True)
+    print(f"[UPLOAD] Request method: {request.method}", file=sys.stderr, flush=True)
+    print(f"[UPLOAD] Files in request: {list(request.files.keys())}", file=sys.stderr, flush=True)
     
     if 'file' not in request.files:
         print(f"[UPLOAD] ERROR: No file in request")
@@ -349,55 +375,88 @@ def upload_file():
         vision_items = []
         
         # Debug: Check API key status
-        print(f"[UPLOAD] ===== Checking API Status =====")
-        print(f"[UPLOAD] GEMINI_API_KEY present: {GEMINI_API_KEY is not None}")
-        print(f"[UPLOAD] GEMINI_API_KEY value: {GEMINI_API_KEY[:20] if GEMINI_API_KEY else 'None'}...")
-        print(f"[UPLOAD] use_gemini flag: {use_gemini}")
-        print(f"[UPLOAD] Environment GEMINI_API_KEY: {os.environ.get('GEMINI_API_KEY', 'NOT SET')[:20] if os.environ.get('GEMINI_API_KEY') else 'NOT SET'}...")
+        condition_result = bool(use_gemini and GEMINI_API_KEY)
+        debug_info = {
+            'gemini_key_present': GEMINI_API_KEY is not None,
+            'gemini_key_value': GEMINI_API_KEY[:20] + '...' if GEMINI_API_KEY else 'None',
+            'use_gemini_flag': use_gemini,
+            'env_key_set': bool(os.environ.get('GEMINI_API_KEY')),
+            'condition_result': condition_result,
+            'gemini_key_type': type(GEMINI_API_KEY).__name__ if GEMINI_API_KEY else 'None'
+        }
         
-        if use_gemini and GEMINI_API_KEY:
+        app.logger.info(f"===== Checking API Status =====")
+        app.logger.info(f"GEMINI_API_KEY present: {debug_info['gemini_key_present']}")
+        app.logger.info(f"GEMINI_API_KEY value: {debug_info['gemini_key_value']}")
+        app.logger.info(f"use_gemini flag: {use_gemini}")
+        app.logger.info(f"Condition check: use_gemini={use_gemini}, GEMINI_API_KEY={bool(GEMINI_API_KEY)}, Combined={use_gemini and GEMINI_API_KEY}")
+        
+        # Also print to stderr
+        import sys
+        print(f"[UPLOAD] ===== Checking API Status =====", file=sys.stderr, flush=True)
+        print(f"[UPLOAD] Condition: {debug_info['condition_result']}", file=sys.stderr, flush=True)
+        
+        app.logger.info(f"About to check condition_result: {condition_result} (type: {type(condition_result)})")
+        
+        if condition_result:
+            app.logger.info("===== ENTERING GEMINI BLOCK =====")
             try:
-                print(f"[UPLOAD] ===== Attempting to use Gemini API =====")
+                app.logger.info("===== Attempting to use Gemini API =====")
+                print(f"[UPLOAD] ===== Attempting to use Gemini API =====", file=sys.stderr, flush=True)
                 gemini_result = analyze_food_with_gemini(filepath)
-                print(f"[UPLOAD] SUCCESS: Gemini API succeeded! Returned {len(gemini_result.get('items', []))} items")
-                print(f"[UPLOAD] Full description length: {len(gemini_result.get('full_description', ''))}")
+                app.logger.info(f"SUCCESS: Gemini API succeeded! Returned {len(gemini_result.get('items', []))} items")
+                print(f"[UPLOAD] SUCCESS: Gemini API succeeded! Returned {len(gemini_result.get('items', []))} items", file=sys.stderr, flush=True)
+                print(f"[UPLOAD] Full description length: {len(gemini_result.get('full_description', ''))}", file=sys.stderr, flush=True)
             except Exception as gemini_error:
                 # Fall back to Vision API if Gemini fails
-                print(f"[UPLOAD] ERROR: Gemini API error, falling back to Vision API")
-                print(f"[UPLOAD] Error details: {str(gemini_error)}")
+                app.logger.error(f"ERROR: Gemini API error, falling back to Vision API: {str(gemini_error)}")
+                print(f"[UPLOAD] ERROR: Gemini API error, falling back to Vision API", file=sys.stderr, flush=True)
+                print(f"[UPLOAD] Error details: {str(gemini_error)}", file=sys.stderr, flush=True)
                 import traceback
                 traceback.print_exc()
                 vision_items = detect_food_items(filepath)
-                print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items")
+                print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items", file=sys.stderr, flush=True)
+                debug_info['gemini_error'] = str(gemini_error)
         else:
             # Use Vision API if Gemini is not available or disabled
+            app.logger.warning("===== ENTERING VISION API BLOCK (condition_result is False) =====")
+            print(f"[UPLOAD] ===== ENTERING VISION API BLOCK =====", file=sys.stderr, flush=True)
             if not GEMINI_API_KEY:
-                print(f"[UPLOAD] ERROR: Gemini API key not set, using Vision API only")
-                print(f"[UPLOAD] GEMINI_API_KEY value: {GEMINI_API_KEY}")
-                print(f"[UPLOAD] Environment variable: {os.environ.get('GEMINI_API_KEY', 'NOT FOUND')}")
+                app.logger.warning("Gemini API key not set, using Vision API only")
+                print(f"[UPLOAD] ERROR: Gemini API key not set, using Vision API only", file=sys.stderr, flush=True)
+                print(f"[UPLOAD] GEMINI_API_KEY value: {GEMINI_API_KEY}", file=sys.stderr, flush=True)
+                print(f"[UPLOAD] Environment variable: {os.environ.get('GEMINI_API_KEY', 'NOT FOUND')}", file=sys.stderr, flush=True)
             else:
-                print(f"[UPLOAD] Gemini disabled by request, using Vision API")
+                app.logger.warning("Gemini disabled by request, using Vision API")
+                print(f"[UPLOAD] Gemini disabled by request, using Vision API", file=sys.stderr, flush=True)
             vision_items = detect_food_items(filepath)
-            print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items")
+            print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items", file=sys.stderr, flush=True)
         
         # Clean up uploaded file
         os.remove(filepath)
         
-        # Return results
+        # Return results with debug info
         if gemini_result:
+            app.logger.info(f"===== Returning Gemini results =====")
+            app.logger.info(f"Items count: {len(gemini_result['items'])}")
             return jsonify({
                 'success': True,
                 'items': gemini_result['items'],
                 'full_description': gemini_result.get('full_description', ''),
                 'count': len(gemini_result['items']),
-                'source': 'gemini'
+                'source': 'gemini',
+                'debug': debug_info
             })
         else:
+            app.logger.info(f"===== Returning Vision API results =====")
+            app.logger.info(f"Items count: {len(vision_items)}")
+            app.logger.warning(f"Using Vision API - condition_result={debug_info['condition_result']}")
             return jsonify({
                 'success': True,
                 'items': vision_items,
                 'count': len(vision_items),
-                'source': 'vision_api'
+                'source': 'vision_api',
+                'debug': debug_info  # Include debug info so we can see it in browser
             })
     
     except Exception as e:
