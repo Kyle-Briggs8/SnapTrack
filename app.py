@@ -1,7 +1,9 @@
 import os
+import base64
 from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 from google.cloud import vision
+import google.generativeai as genai
 import io
 
 app = Flask(__name__)
@@ -11,6 +13,12 @@ app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 # Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Configure Gemini API
+# Get API key from environment variable or use default
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 def allowed_file(filename):
     """Check if file extension is allowed"""
@@ -131,6 +139,117 @@ def detect_food_items(image_path):
     except Exception as e:
         raise Exception(f'Error detecting food items: {str(e)}')
 
+def analyze_food_with_gemini(image_path):
+    """Use Google Gemini API to get detailed food descriptions"""
+    try:
+        # Check if Gemini API key is configured
+        if not GEMINI_API_KEY:
+            raise Exception(
+                'Gemini API key not found. Please set the GEMINI_API_KEY environment variable. '
+                'Get your API key from https://ai.google.dev/'
+            )
+        
+        # Read the image file
+        with io.open(image_path, 'rb') as image_file:
+            image_data = image_file.read()
+        
+        # Initialize Gemini model (using gemini-1.5-pro for better vision capabilities)
+        model = genai.GenerativeModel('gemini-1.5-pro')
+        
+        # Create a detailed prompt for food analysis
+        prompt = """Analyze this food image and provide a detailed description. 
+        
+Please identify:
+1. The main food items (e.g., "Hamburger with lettuce, tomato, and pickles")
+2. All visible ingredients and components
+3. Any side items visible (fries, drinks, etc.)
+4. The type of cuisine or food category
+
+Format your response as a JSON-like structure with:
+- A main description of what the food is
+- A list of all identified food items with their specific ingredients/components
+- Any additional context (restaurant type, cuisine style, etc.)
+
+Be specific and detailed. For example, instead of just "hamburger", say "hamburger with beef patty, lettuce, tomato, pickles, and special sauce on a sesame seed bun"."""
+        
+        # Prepare the image
+        import PIL.Image
+        image = PIL.Image.open(io.BytesIO(image_data))
+        
+        # Generate content
+        response = model.generate_content([prompt, image])
+        
+        # Parse the response
+        description_text = response.text
+        
+        # Extract structured information
+        detected_items = []
+        
+        # Improved parsing: Look for numbered lists, bullet points, or structured content
+        lines = description_text.split('\n')
+        food_keywords = ['burger', 'sandwich', 'pizza', 'salad', 'fries', 'chicken', 'beef', 'pork', 
+                        'fish', 'rice', 'pasta', 'bread', 'lettuce', 'tomato', 'onion', 'cheese',
+                        'sauce', 'dressing', 'patty', 'bun', 'pickle', 'mayo', 'ketchup', 'mustard']
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Skip markdown headers and formatting
+            if line.startswith('#') or line.startswith('*') and len(line) < 5:
+                continue
+            
+            # Remove list markers (1., 2., -, *, etc.)
+            cleaned_line = line
+            if cleaned_line and cleaned_line[0] in ['1', '2', '3', '4', '5', '-', '*', '•']:
+                cleaned_line = cleaned_line[1:].strip()
+                if cleaned_line and cleaned_line[0] == '.':
+                    cleaned_line = cleaned_line[1:].strip()
+            
+            # Check if line contains food-related content
+            if cleaned_line and len(cleaned_line) > 15:
+                line_lower = cleaned_line.lower()
+                # If it mentions food keywords or seems descriptive
+                if any(keyword in line_lower for keyword in food_keywords) or len(cleaned_line) > 30:
+                    # Avoid duplicates
+                    if cleaned_line.lower() not in [item['description'].lower() for item in detected_items]:
+                        detected_items.append({
+                            'description': cleaned_line,
+                            'confidence': 90.0,
+                            'type': 'gemini_detailed'
+                        })
+        
+        # If we didn't get good structured items, split by sentences
+        if len(detected_items) < 2:
+            sentences = [s.strip() for s in description_text.replace('\n', ' ').split('.') 
+                        if s.strip() and len(s.strip()) > 25]
+            for sentence in sentences[:8]:  # Limit to top 8 sentences
+                sentence = sentence.strip()
+                if sentence and sentence.lower() not in [item['description'].lower() for item in detected_items]:
+                    detected_items.append({
+                        'description': sentence + '.',
+                        'confidence': 90.0,
+                        'type': 'gemini_description'
+                    })
+        
+        # If still no items, use the full description as a single item
+        if not detected_items:
+            detected_items.append({
+                'description': description_text[:200] + ('...' if len(description_text) > 200 else ''),
+                'confidence': 90.0,
+                'type': 'gemini_full'
+            })
+        
+        return {
+            'items': detected_items,
+            'full_description': description_text,
+            'source': 'gemini'
+        }
+    
+    except Exception as e:
+        raise Exception(f'Error analyzing food with Gemini: {str(e)}')
+
 @app.route('/')
 def index():
     """Render the main page"""
@@ -138,7 +257,7 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Handle file upload and process with Vision API"""
+    """Handle file upload and process with Gemini API (with Vision API fallback)"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
     
@@ -156,18 +275,41 @@ def upload_file():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
-        # Detect food items using Vision API
-        food_items = detect_food_items(filepath)
+        # Try Gemini API first (for detailed descriptions)
+        use_gemini = request.form.get('use_gemini', 'true').lower() == 'true'
+        gemini_result = None
+        vision_items = []
+        
+        if use_gemini and GEMINI_API_KEY:
+            try:
+                gemini_result = analyze_food_with_gemini(filepath)
+            except Exception as gemini_error:
+                # Fall back to Vision API if Gemini fails
+                print(f"Gemini API error, falling back to Vision API: {str(gemini_error)}")
+                vision_items = detect_food_items(filepath)
+        else:
+            # Use Vision API if Gemini is not available or disabled
+            vision_items = detect_food_items(filepath)
         
         # Clean up uploaded file
         os.remove(filepath)
         
-        return jsonify({
-            'success': True,
-            'items': food_items,
-            'count': len(food_items),
-            'source': 'vision_api'
-        })
+        # Return results
+        if gemini_result:
+            return jsonify({
+                'success': True,
+                'items': gemini_result['items'],
+                'full_description': gemini_result.get('full_description', ''),
+                'count': len(gemini_result['items']),
+                'source': 'gemini'
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'items': vision_items,
+                'count': len(vision_items),
+                'source': 'vision_api'
+            })
     
     except Exception as e:
         # Clean up file if it exists
