@@ -1,0 +1,4 @@
+Flask==3.0.0
+google-cloud-vision==3.4.5
+Werkzeug==3.0.1
+
