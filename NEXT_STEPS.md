@@ -2,7 +2,7 @@
 
 ## Current Status
 - ✅ Gemini API integration complete
-- ✅ New API key configured: `AIzaSyD3ZvUBZVKW6EHBtVlLIIu7KzC6PpEr9UI`
+- ✅ New API key configured (set in start.ps1 or environment variable)
 - ✅ Enhanced logging added for debugging
 - ⚠️ Issue: Gemini not being used (still showing Vision API results)
 
@@ -34,7 +34,7 @@
 1. Check Flask console for `[UPLOAD]` messages when uploading
 2. Look for error messages or exceptions
 3. Verify API key is set: Visit `http://localhost:5000/api/status`
-4. Check if key preview shows new key: `AIzaSyD3ZvUBZVKW6EHB...`
+4. Check if key preview shows your API key prefix
 
 ### 3. Unicode Encoding Error (Fixed)
 **Problem:** `'charmap' codec can't encode character '\u2717'`
@@ -51,7 +51,7 @@ When you return, test these:
 
 2. **Check API status:**
    - Visit: `http://localhost:5000/api/status`
-   - Verify: `gemini_api_key_preview` shows `AIzaSyD3ZvUBZVKW6EHB...` (new key)
+   - Verify: `gemini_api_key_preview` shows your API key prefix
 
 3. **Test upload:**
    - Upload an image
@@ -104,7 +104,7 @@ Invoke-WebRequest -Uri "http://localhost:5000/api/status" -UseBasicParsing | Sel
 **Test Gemini API directly:**
 ```python
 import google.generativeai as genai
-genai.configure(api_key="AIzaSyD3ZvUBZVKW6EHBtVlLIIu7KzC6PpEr9UI")
+genai.configure(api_key="your-gemini-api-key-here")
 model = genai.GenerativeModel('gemini-1.5-pro')
 # Test with an image
 ```
