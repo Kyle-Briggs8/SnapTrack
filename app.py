@@ -17,8 +17,18 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Configure Gemini API
 # Get API key from environment variable or use default
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+print(f"[STARTUP] Checking for GEMINI_API_KEY...")
+print(f"[STARTUP] Environment variable present: {bool(os.environ.get('GEMINI_API_KEY'))}")
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    print(f"[STARTUP] GEMINI_API_KEY found: {GEMINI_API_KEY[:20]}...")
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        print(f"[INFO] Gemini API configured successfully with key: {GEMINI_API_KEY[:20]}...")
+    except Exception as e:
+        print(f"[WARNING] Failed to configure Gemini API: {e}")
+        GEMINI_API_KEY = None
+else:
+    print(f"[INFO] GEMINI_API_KEY not set - will use Vision API only")
 
 def allowed_file(filename):
     """Check if file extension is allowed"""
@@ -88,9 +98,11 @@ def detect_food_items(image_path):
                     desc = entity.description.lower()
                     # Filter out very generic terms
                     if desc not in seen_descriptions and len(desc) > 2:
+                        # Ensure confidence is between 0-100%
+                        confidence = min(100.0, round(entity.score * 100, 2))
                         detected_items.append({
                             'description': entity.description,
-                            'confidence': round(entity.score * 100, 2),
+                            'confidence': confidence,
                             'type': 'web_entity'
                         })
                         seen_descriptions.add(desc)
@@ -103,9 +115,11 @@ def detect_food_items(image_path):
             if obj.score > 0.5:
                 desc = obj.name.lower()
                 if desc not in seen_descriptions:
+                    # Ensure confidence is between 0-100%
+                    confidence = min(100.0, round(obj.score * 100, 2))
                     detected_items.append({
                         'description': obj.name,
-                        'confidence': round(obj.score * 100, 2),
+                        'confidence': confidence,
                         'type': 'object'
                     })
                     seen_descriptions.add(desc)
@@ -120,9 +134,11 @@ def detect_food_items(image_path):
                 # Skip very generic terms if we already have specific ones
                 generic_terms = {'food', 'dish', 'cuisine', 'meal', 'ingredient'}
                 if desc not in seen_descriptions and desc not in generic_terms:
+                    # Ensure confidence is between 0-100%
+                    confidence = min(100.0, round(label.score * 100, 2))
                     detected_items.append({
                         'description': label.description,
-                        'confidence': round(label.score * 100, 2),
+                        'confidence': confidence,
                         'type': 'label'
                     })
                     seen_descriptions.add(desc)
@@ -157,20 +173,25 @@ def analyze_food_with_gemini(image_path):
         model = genai.GenerativeModel('gemini-1.5-pro')
         
         # Create a detailed prompt for food analysis
-        prompt = """Analyze this food image and provide a detailed description. 
-        
-Please identify:
-1. The main food items (e.g., "Hamburger with lettuce, tomato, and pickles")
-2. All visible ingredients and components
-3. Any side items visible (fries, drinks, etc.)
-4. The type of cuisine or food category
+        prompt = """You are a food identification expert. Analyze this food image CAREFULLY and accurately.
 
-Format your response as a JSON-like structure with:
-- A main description of what the food is
-- A list of all identified food items with their specific ingredients/components
-- Any additional context (restaurant type, cuisine style, etc.)
+CRITICAL RULES:
+1. ONLY describe what you can ACTUALLY SEE in the image. Do NOT guess or assume items that aren't visible.
+2. Be extremely specific about ingredients. NEVER use generic terms like "burger" or "cheeseburger" alone.
+3. If you see a burger, describe it in detail: "Hamburger with [specific ingredients you can see]"
+4. If you DON'T see fries, do NOT mention fries. Only list items that are clearly visible.
 
-Be specific and detailed. For example, instead of just "hamburger", say "hamburger with beef patty, lettuce, tomato, pickles, and special sauce on a sesame seed bun"."""
+REQUIRED FORMAT - Provide your response in this exact structure:
+
+MAIN ITEM: [One detailed description of the primary food item with ALL visible ingredients]
+Example: "Hamburger with grilled beef patty, fresh iceberg lettuce, sliced red tomatoes, dill pickles, and special sauce on a toasted sesame seed bun"
+
+ADDITIONAL ITEMS: [List any other food items you can clearly see, or write "None" if there are none]
+Example: "French fries" or "None"
+
+DETAILED DESCRIPTION: [2-3 sentences describing everything visible in detail]
+
+Be accurate and specific. Only mention items you can actually see in the image."""
         
         # Prepare the image
         import PIL.Image
@@ -181,65 +202,93 @@ Be specific and detailed. For example, instead of just "hamburger", say "hamburg
         
         # Parse the response
         description_text = response.text
+        print(f"[DEBUG] Gemini raw response: {description_text[:500]}...")  # Log first 500 chars
         
         # Extract structured information
         detected_items = []
         
-        # Improved parsing: Look for numbered lists, bullet points, or structured content
+        # Parse the structured response format
         lines = description_text.split('\n')
-        food_keywords = ['burger', 'sandwich', 'pizza', 'salad', 'fries', 'chicken', 'beef', 'pork', 
-                        'fish', 'rice', 'pasta', 'bread', 'lettuce', 'tomato', 'onion', 'cheese',
-                        'sauce', 'dressing', 'patty', 'bun', 'pickle', 'mayo', 'ketchup', 'mustard']
+        main_item = None
+        additional_items = []
         
+        current_section = None
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Skip markdown headers and formatting
-            if line.startswith('#') or line.startswith('*') and len(line) < 5:
+            # Look for MAIN ITEM section
+            if 'MAIN ITEM:' in line.upper() or line.upper().startswith('MAIN ITEM'):
+                # Extract the description after "MAIN ITEM:"
+                main_item = line.split(':', 1)[1].strip() if ':' in line else line
+                current_section = 'main'
                 continue
+            elif current_section == 'main' and main_item and not line.upper().startswith('ADDITIONAL'):
+                # Continue building main item description
+                if line and not line.upper().startswith('EXAMPLE'):
+                    main_item += ' ' + line
             
-            # Remove list markers (1., 2., -, *, etc.)
-            cleaned_line = line
-            if cleaned_line and cleaned_line[0] in ['1', '2', '3', '4', '5', '-', '*', '•']:
-                cleaned_line = cleaned_line[1:].strip()
-                if cleaned_line and cleaned_line[0] == '.':
-                    cleaned_line = cleaned_line[1:].strip()
+            # Look for ADDITIONAL ITEMS section
+            elif 'ADDITIONAL ITEMS:' in line.upper() or line.upper().startswith('ADDITIONAL ITEMS'):
+                current_section = 'additional'
+                additional_text = line.split(':', 1)[1].strip() if ':' in line else ''
+                if additional_text and additional_text.upper() != 'NONE':
+                    additional_items.append(additional_text)
+                continue
+            elif current_section == 'additional' and not line.upper().startswith('DETAILED'):
+                if line and line.upper() != 'NONE' and not line.upper().startswith('EXAMPLE'):
+                    additional_items.append(line)
             
-            # Check if line contains food-related content
-            if cleaned_line and len(cleaned_line) > 15:
-                line_lower = cleaned_line.lower()
-                # If it mentions food keywords or seems descriptive
-                if any(keyword in line_lower for keyword in food_keywords) or len(cleaned_line) > 30:
-                    # Avoid duplicates
-                    if cleaned_line.lower() not in [item['description'].lower() for item in detected_items]:
-                        detected_items.append({
-                            'description': cleaned_line,
-                            'confidence': 90.0,
-                            'type': 'gemini_detailed'
-                        })
+            # If we find DETAILED DESCRIPTION, we can stop parsing structured format
+            elif 'DETAILED DESCRIPTION:' in line.upper():
+                current_section = 'detailed'
+                break
         
-        # If we didn't get good structured items, split by sentences
-        if len(detected_items) < 2:
-            sentences = [s.strip() for s in description_text.replace('\n', ' ').split('.') 
-                        if s.strip() and len(s.strip()) > 25]
-            for sentence in sentences[:8]:  # Limit to top 8 sentences
-                sentence = sentence.strip()
-                if sentence and sentence.lower() not in [item['description'].lower() for item in detected_items]:
-                    detected_items.append({
-                        'description': sentence + '.',
-                        'confidence': 90.0,
-                        'type': 'gemini_description'
-                    })
-        
-        # If still no items, use the full description as a single item
-        if not detected_items:
+        # Add main item if found
+        if main_item and len(main_item) > 10:
             detected_items.append({
-                'description': description_text[:200] + ('...' if len(description_text) > 200 else ''),
-                'confidence': 90.0,
-                'type': 'gemini_full'
+                'description': main_item,
+                'confidence': 95.0,
+                'type': 'gemini_main'
             })
+        
+        # Add additional items
+        for item in additional_items:
+            if item and len(item) > 5 and item.upper() != 'NONE':
+                detected_items.append({
+                    'description': item,
+                    'confidence': 90.0,
+                    'type': 'gemini_additional'
+                })
+        
+        # If structured parsing didn't work, try to extract the most descriptive sentence
+        if not detected_items:
+            # Look for the longest, most descriptive sentence
+            sentences = [s.strip() for s in description_text.replace('\n', ' ').split('.') 
+                        if s.strip() and len(s.strip()) > 30]
+            
+            # Filter out generic terms
+            generic_terms = ['burger', 'cheeseburger', 'food', 'dish', 'meal']
+            descriptive_sentences = [s for s in sentences 
+                                   if any(term in s.lower() for term in ['with', 'and', 'on', 'topped', 'served', 'includes'])
+                                   and not all(term in s.lower() for term in generic_terms if len(s.split()) < 5)]
+            
+            if descriptive_sentences:
+                # Use the most descriptive sentence
+                main_desc = max(descriptive_sentences, key=len)
+                detected_items.append({
+                    'description': main_desc + '.',
+                    'confidence': 90.0,
+                    'type': 'gemini_parsed'
+                })
+            else:
+                # Fallback: use the full description
+                detected_items.append({
+                    'description': description_text[:300] + ('...' if len(description_text) > 300 else ''),
+                    'confidence': 85.0,
+                    'type': 'gemini_full'
+                })
         
         return {
             'items': detected_items,
@@ -255,18 +304,36 @@ def index():
     """Render the main page"""
     return render_template('index.html')
 
+@app.route('/api/status')
+def api_status():
+    """Check API status for debugging"""
+    return jsonify({
+        'gemini_api_key_set': GEMINI_API_KEY is not None,
+        'gemini_api_key_preview': GEMINI_API_KEY[:20] + '...' if GEMINI_API_KEY else None,
+        'vision_api_configured': os.environ.get('GOOGLE_APPLICATION_CREDENTIALS') is not None,
+        'environment_gemini_key': 'SET' if os.environ.get('GEMINI_API_KEY') else 'NOT SET'
+    })
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     """Handle file upload and process with Gemini API (with Vision API fallback)"""
+    print(f"\n[UPLOAD] ===== Upload request received =====")
+    print(f"[UPLOAD] Request method: {request.method}")
+    print(f"[UPLOAD] Files in request: {list(request.files.keys())}")
+    
     if 'file' not in request.files:
+        print(f"[UPLOAD] ERROR: No file in request")
         return jsonify({'error': 'No file provided'}), 400
     
     file = request.files['file']
+    print(f"[UPLOAD] File received: {file.filename}")
     
     if file.filename == '':
+        print(f"[UPLOAD] ERROR: Empty filename")
         return jsonify({'error': 'No file selected'}), 400
     
     if not allowed_file(file.filename):
+        print(f"[UPLOAD] ERROR: Invalid file type")
         return jsonify({'error': 'Invalid file type. Please upload an image (PNG, JPG, JPEG, GIF, WEBP)'}), 400
     
     try:
@@ -274,22 +341,44 @@ def upload_file():
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
+        print(f"[UPLOAD] File saved to: {filepath}")
         
         # Try Gemini API first (for detailed descriptions)
         use_gemini = request.form.get('use_gemini', 'true').lower() == 'true'
         gemini_result = None
         vision_items = []
         
+        # Debug: Check API key status
+        print(f"[UPLOAD] ===== Checking API Status =====")
+        print(f"[UPLOAD] GEMINI_API_KEY present: {GEMINI_API_KEY is not None}")
+        print(f"[UPLOAD] GEMINI_API_KEY value: {GEMINI_API_KEY[:20] if GEMINI_API_KEY else 'None'}...")
+        print(f"[UPLOAD] use_gemini flag: {use_gemini}")
+        print(f"[UPLOAD] Environment GEMINI_API_KEY: {os.environ.get('GEMINI_API_KEY', 'NOT SET')[:20] if os.environ.get('GEMINI_API_KEY') else 'NOT SET'}...")
+        
         if use_gemini and GEMINI_API_KEY:
             try:
+                print(f"[UPLOAD] ===== Attempting to use Gemini API =====")
                 gemini_result = analyze_food_with_gemini(filepath)
+                print(f"[UPLOAD] SUCCESS: Gemini API succeeded! Returned {len(gemini_result.get('items', []))} items")
+                print(f"[UPLOAD] Full description length: {len(gemini_result.get('full_description', ''))}")
             except Exception as gemini_error:
                 # Fall back to Vision API if Gemini fails
-                print(f"Gemini API error, falling back to Vision API: {str(gemini_error)}")
+                print(f"[UPLOAD] ERROR: Gemini API error, falling back to Vision API")
+                print(f"[UPLOAD] Error details: {str(gemini_error)}")
+                import traceback
+                traceback.print_exc()
                 vision_items = detect_food_items(filepath)
+                print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items")
         else:
             # Use Vision API if Gemini is not available or disabled
+            if not GEMINI_API_KEY:
+                print(f"[UPLOAD] ERROR: Gemini API key not set, using Vision API only")
+                print(f"[UPLOAD] GEMINI_API_KEY value: {GEMINI_API_KEY}")
+                print(f"[UPLOAD] Environment variable: {os.environ.get('GEMINI_API_KEY', 'NOT FOUND')}")
+            else:
+                print(f"[UPLOAD] Gemini disabled by request, using Vision API")
             vision_items = detect_food_items(filepath)
+            print(f"[UPLOAD] Using Vision API results: {len(vision_items)} items")
         
         # Clean up uploaded file
         os.remove(filepath)

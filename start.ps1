@@ -4,8 +4,7 @@
 $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\Users\kyle\Downloads\snaptrack-482706-0d453712c512.json"
 
 # Set Gemini API key if you have one (optional - app will fall back to Vision API if not set)
-# Uncomment and add your Gemini API key below:
-# $env:GEMINI_API_KEY = "your-gemini-api-key-here"
+$env:GEMINI_API_KEY = "AIzaSyD3ZvUBZVKW6EHBtVlLIIu7KzC6PpEr9UI"
 
 Write-Host "Starting SnapTrack..." -ForegroundColor Green
 Write-Host "Vision API credentials: $env:GOOGLE_APPLICATION_CREDENTIALS" -ForegroundColor Cyan

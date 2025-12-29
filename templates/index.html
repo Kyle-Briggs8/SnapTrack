@@ -338,7 +338,18 @@
                 return;
             }
             
-            let html = `<div class="results-title">Detected Items (${data.count})</div>`;
+            // Show which API was used
+            const apiSource = data.source === 'gemini' ? 'Gemini AI' : 'Vision API';
+            const apiColor = data.source === 'gemini' ? '#667eea' : '#999';
+            const apiIcon = data.source === 'gemini' ? '🤖' : '👁️';
+            
+            let html = `
+                <div style="text-align: center; margin-bottom: 15px; padding: 10px; background: #f8f9ff; border-radius: 8px;">
+                    <span style="color: ${apiColor}; font-weight: 600;">${apiIcon} Using ${apiSource}</span>
+                    ${data.source === 'vision_api' ? '<div style="color: #999; font-size: 0.9em; margin-top: 5px;">For detailed descriptions, set GEMINI_API_KEY</div>' : ''}
+                </div>
+                <div class="results-title">Detected Items (${data.count})</div>
+            `;
             
             // Show full description if available (from Gemini)
             if (data.full_description && data.source === 'gemini') {
